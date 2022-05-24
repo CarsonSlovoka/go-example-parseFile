@@ -3,10 +3,12 @@ package main
 import (
 	"embed"
 	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -22,10 +24,26 @@ var staticFS embed.FS
 //go:embed static/img/favicon.svg
 var faviconBytes []byte
 
-var Mux *http.ServeMux
+var (
+	Mux    *http.ServeMux
+	Config struct {
+		IsEmbed bool
+		Context struct {
+			Site map[string]any
+		}
+	}
+)
 
 func init() {
 	Mux = http.NewServeMux()
+}
+
+func init() {
+	isEmbed := flag.Bool("e", false, "True: embed, false: filesystem")
+	flag.Parse()
+	Config.IsEmbed = *isEmbed
+	Config.Context.Site = map[string]any{"Title": "Demo"}
+
 }
 
 func Dict(values ...any) (map[string]any, error) {
@@ -49,7 +67,7 @@ func Dict(values ...any) (map[string]any, error) {
 	return dict, nil
 }
 
-func CollectFiles(fs embed.FS, dirName string, isRecursive bool) (filepathList []string, err error) {
+func CollectFilesFromFS(fs embed.FS, dirName string, isRecursive bool) (filepathList []string, err error) {
 	dirEntryList, err := fs.ReadDir(dirName)
 	if err != nil {
 		return nil, err
@@ -58,13 +76,24 @@ func CollectFiles(fs embed.FS, dirName string, isRecursive bool) (filepathList [
 	for _, dirEntry := range dirEntryList {
 		if dirEntry.IsDir() {
 			if isRecursive {
-				fpList, _ := CollectFiles(fs, path.Join(dirName, dirEntry.Name()), isRecursive)
+				fpList, _ := CollectFilesFromFS(fs, path.Join(dirName, dirEntry.Name()), isRecursive)
 				filepathList = append(filepathList, fpList...)
 			}
 			continue
 		}
 		filepathList = append(filepathList, path.Join(dirName, dirEntry.Name()))
 	}
+	return
+}
+
+func CollectFiles(dir string) (filepathList []string, err error) {
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		filepathList = append(filepathList, path)
+		return nil
+	})
 	return
 }
 
@@ -76,7 +105,15 @@ func initURL() {
 
 	Mux.Handle("/static/", http.FileServer(http.FS(staticFS)))
 
-	tmplFileList, err := CollectFiles(UrlFS, "tmpl", true)
+	var (
+		tmplFileList []string
+		err          error
+	)
+	if Config.IsEmbed {
+		tmplFileList, err = CollectFilesFromFS(UrlFS, "tmpl", true)
+	} else {
+		tmplFileList, err = CollectFiles("./tmpl")
+	}
 	if err != nil {
 		panic(err)
 	}
@@ -92,7 +129,12 @@ func initURL() {
 			fallthrough
 		case ".gohtml":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			content, err := UrlFS.ReadFile(curSrc)
+			var content []byte
+			if Config.IsEmbed {
+				content, err = UrlFS.ReadFile(curSrc)
+			} else {
+				content, err = os.ReadFile(curSrc)
+			}
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -122,19 +164,22 @@ func initURL() {
 			}
 			filterTmpl = append(filterTmpl, curSrc)
 			fmt.Printf("Templates used on this page:%+v\n", filterTmpl)
-			t, err := template.New(
+			t := template.New(
 				filepath.Base(curSrc)).
-				Funcs(map[string]any{"dict": Dict}).
-				ParseFS(UrlFS, filterTmpl...)
+				Funcs(map[string]any{"dict": Dict})
+
+			if Config.IsEmbed {
+				t, err = t.ParseFS(UrlFS, filterTmpl...)
+			} else {
+				t, err = t.ParseFiles(filterTmpl...)
+			}
+
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(err.Error()))
 				return
 			}
-			siteContext := map[string]any{
-				"Title": "Demo",
-			}
-			_ = t.Execute(w, siteContext)
+			_ = t.Execute(w, Config.Context)
 		default:
 			http.FileServer(http.Dir("."))
 		}

@@ -1,6 +1,6 @@
-{{template "head.gohtml"}}
+{{template "head.gohtml" .}}
 
-{{- template "layout-1.gohtml" dict "Caption" "Blog" "Site" . -}}
+{{- template "layout-1.gohtml" dict "Caption" "Blog" "Site" .Site -}}
 {{define "body" }}
     <div>Post 001</div>
     <div>Post 002</div>
