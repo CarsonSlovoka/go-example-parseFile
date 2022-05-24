@@ -1,0 +1,13 @@
+<style>
+    .row {
+        flex-direction: column;
+        align-content: center;
+    }
+</style>
+<body class="container">
+<h2 title="{{.Site.Title}}">{{.Caption}}</h2>
+<div class="row">
+    {{- block "body" .}}
+    {{- end}}
+</div>
+</body>
