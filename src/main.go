@@ -43,7 +43,12 @@ func init() {
 	flag.Parse()
 	Config.IsEmbed = *isEmbed
 	Config.Context.Site = map[string]any{"Title": "Demo"}
+}
 
+var reTmpl *regexp.Regexp
+
+func init() {
+	reTmpl = regexp.MustCompile(`{{-? ?template \"(?P<Name>[^() ]*)\" ?.* ?-?}}`)
 }
 
 func Dict(values ...any) (map[string]any, error) {
@@ -97,6 +102,45 @@ func CollectFiles(dir string) (filepathList []string, err error) {
 	return
 }
 
+// getAllTmplName Get all template names, including nest.
+func getAllTmplName(filePath string, allTmpl []string, isEmbed bool) (filterTmpl []string, err error) {
+	var content []byte
+	if isEmbed {
+		content, err = UrlFS.ReadFile(filePath)
+	} else {
+		content, err = os.ReadFile(filePath)
+	}
+	if err != nil {
+		return
+	}
+	matchList := reTmpl.FindAllStringSubmatch(string(content), -1)
+
+	if len(matchList) == 0 {
+		return
+	}
+
+	curTmplSet := map[string]string{} // Know the names of all the templates used in the current file
+	for _, match := range matchList {
+		tmplName := match[1]
+		if _, exists := curTmplSet[tmplName]; exists {
+			continue
+		}
+		curTmplSet[tmplName] = tmplName
+	}
+
+	for _, tmplFilepath := range allTmpl { // Select the all used template from allTmpl.
+		_, exists := curTmplSet[filepath.Base(tmplFilepath)]
+		if exists {
+			filterTmpl = append(filterTmpl, tmplFilepath)
+			fList, _ := getAllTmplName(tmplFilepath, allTmpl, isEmbed) // The template may also have a template (sub-template) again, so look for it again.
+			if len(fList) > 0 {
+				filterTmpl = append(filterTmpl, fList...)
+			}
+		}
+	}
+	return
+}
+
 func initURL() {
 	Mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "image/svg+xml")
@@ -117,7 +161,6 @@ func initURL() {
 	if err != nil {
 		panic(err)
 	}
-	re := regexp.MustCompile(`{{-? ?template \"(?P<Name>[^() ]*)\" ?.* ?-?}}`)
 	Mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		curSrc := path.Join("./src", r.URL.Path)
 		switch filepath.Ext(r.URL.Path) {
@@ -129,40 +172,12 @@ func initURL() {
 			fallthrough
 		case ".gohtml":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			var content []byte
-			if Config.IsEmbed {
-				content, err = UrlFS.ReadFile(curSrc)
-			} else {
-				content, err = os.ReadFile(curSrc)
-			}
+			filterTmpl, err := getAllTmplName(curSrc, tmplFileList, Config.IsEmbed)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			matchList := re.FindAllStringSubmatch(string(content), -1)
-			tmplMap := make(map[string][]string)
-			for _, match := range matchList {
-				for idxGroup, name := range re.SubexpNames() {
-					if idxGroup != 0 && name != "" {
-						tmplMap[name] = append(tmplMap[name], match[idxGroup])
-					}
-				}
-			}
-			setTmpl := map[string]string{}
-			for _, tmpl := range tmplMap["Name"] {
-				if _, exists := setTmpl[tmpl]; exists {
-					continue
-				}
-				setTmpl[tmpl] = tmpl
-			}
-			var filterTmpl []string
-			for _, tmplFilepath := range tmplFileList {
-				_, exists := setTmpl[filepath.Base(tmplFilepath)]
-				if exists {
-					filterTmpl = append(filterTmpl, tmplFilepath)
-				}
-			}
-			filterTmpl = append(filterTmpl, curSrc)
+			filterTmpl = append(filterTmpl, curSrc) // Must include self
 			fmt.Printf("Templates used on this page:%+v\n", filterTmpl)
 			t := template.New(
 				filepath.Base(curSrc)).
